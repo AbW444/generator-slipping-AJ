@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Générateur de Stippling</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        h1 {
+            margin: 20px 0;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 250px 1fr;
+            gap: 20px;
+            width: 90%;
+            max-width: 1200px;
+        }
+        .controls, .status {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .panel {
+            margin-bottom: 20px;
+        }
+        .control-group {
+            margin-bottom: 10px;
+        }
+        label {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        input[type="range"], input[type="file"] {
+            width: 100%;
+        }
+        canvas {
+            background: #adadad;
+            width: 100%;
+            border-radius: 8px;
+        }
+        button {
+            background: #007bff;
+            color: #fff;
+            border: none;
+            padding: 10px;
+            width: 100%;
+            margin-top: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Générateur de Stippling</h1>
+    <div class="container">
+        <div class="controls">
+            <input type="file" id="imageInput" accept="image/*">
+
+            <div class="panel">
+                <h3>Zones Sombres</h3>
+                <div class="control-group">
+                    <label>Luminosité: <span id="darkBrightness">0</span></label>
+                    <input type="range" id="darkBrightnessRange" min="-128" max="128" value="0">
+                </div>
+                <div class="control-group">
+                    <label>Densité: <span id="darkDensity">4</span></label>
+                    <input type="range" id="darkDensityRange" min="1" max="16" value="4">
+                </div>
+                <div class="control-group">
+                    <label>Longueur max: <span id="darkLength">100</span></label>
+                    <input type="range" id="darkLengthRange" min="50" max="200" value="100">
+                </div>
+                <div class="control-group">
+                    <label>Épaisseur du trait: <span id="darkLineWidth">1</span> mm</label>
+                    <input type="range" id="darkLineWidthRange" min="1" max="10" value="1">
+                </div>
+                <div class="control-group">
+                    <label><input type="checkbox" id="darkCurved"> Courbes</label>
+                </div>
+                <div class="control-group">
+                    <label><input type="checkbox" id="darkVisible" checked> Visible</label>
+                </div>
+                <button id="exportDark">Exporter SVG</button>
+            </div>
+
+            <div class="panel">
+                <h3>Zones Claires</h3>
+                <div class="control-group">
+                    <label>Luminosité: <span id="lightBrightness">0</span></label>
+                    <input type="range" id="lightBrightnessRange" min="-128" max="128" value="0">
+                </div>
+                <div class="control-group">
+                    <label>Densité: <span id="lightDensity">4</span></label>
+                    <input type="range" id="lightDensityRange" min="1" max="16" value="4">
+                </div>
+                <div class="control-group">
+                    <label>Longueur max: <span id="lightLength">100</span></label>
+                    <input type="range" id="lightLengthRange" min="50" max="200" value="100">
+                </div>
+                <div class="control-group">
+                    <label>Épaisseur du trait: <span id="lightLineWidth">1</span> mm</label>
+                    <input type="range" id="lightLineWidthRange" min="1" max="10" value="1">
+                </div>
+                <div class="control-group">
+                    <label><input type="checkbox" id="lightCurved"> Courbes</label>
+                </div>
+                <div class="control-group">
+                    <label><input type="checkbox" id="lightVisible" checked> Visible</label>
+                </div>
+                <button id="exportLight">Exporter SVG</button>
+            </div>
+
+            <div class="status" id="status"></div>
+        </div>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script>
+        class StipplingApp {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.image = null;
+                this.darkPaths = [];
+                this.lightPaths = [];
+                this.isProcessing = false;
+                this.setupListeners();
+            }
+
+            setupListeners() {
+                document.getElementById('imageInput').addEventListener('change', (e) => this.loadImage(e.target.files[0]));
+                ['dark', 'light'].forEach(type => {
+                    ['Brightness', 'Density', 'Length', 'LineWidth'].forEach(param => {
+                        document.getElementById(`${type}${param}Range`).addEventListener('input', () => {
+                            document.getElementById(`${type}${param}`).textContent = document.getElementById(`${type}${param}Range`).value;
+                            this.updatePaths();
+                        });
+                    });
+                    document.getElementById(`${type}Curved`).addEventListener('change', () => this.updatePaths());
+                    document.getElementById(`${type}Visible`).addEventListener('change', () => this.draw());
+                    document.getElementById(`export${type[0].toUpperCase() + type.slice(1)}`).addEventListener('click', () => this.exportSVG(type));
+                });
+            }
+
+            loadImage(file) {
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const maxSize = 1000;
+                        let [width, height] = [img.width, img.height];
+                        if (width > maxSize || height > maxSize) {
+                            if (width > height) [height, width] = [height * maxSize / width, maxSize];
+                            else [width, height] = [width * maxSize / height, maxSize];
+                        }
+                        [this.canvas.width, this.canvas.height] = [width, height];
+                        this.ctx.drawImage(img, 0, 0, width, height);
+                        this.image = this.ctx.getImageData(0, 0, width, height);
+                        this.updatePaths();
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+
+            updatePaths() {
+                if (!this.image || this.isProcessing) return;
+                this.isProcessing = true;
+                setTimeout(() => {
+                    this.darkPaths = this.generatePaths('dark');
+                    this.lightPaths = this.generatePaths('light');
+                    this.draw();
+                    this.isProcessing = false;
+                    document.getElementById('status').textContent = `${this.darkPaths.length + this.lightPaths.length} chemins générés.`;
+                }, 0);
+            }
+
+            generatePaths(type) {
+                const params = {
+                    brightness: parseInt(document.getElementById(`${type}BrightnessRange`).value),
+                    density: parseInt(document.getElementById(`${type}DensityRange`).value),
+                    maxLength: parseInt(document.getElementById(`${type}LengthRange`).value),
+                    lineWidth: parseInt(document.getElementById(`${type}LineWidthRange`).value),
+                    curved: document.getElementById(`${type}Curved`).checked
+                };
+                const min = type === 'dark' ? 0 : 128;
+                const max = type === 'dark' ? 127 : 255;
+                return this.createPaths(min, max, params);
+            }
+
+            createPaths(min, max, params) {
+                const { width, height, data } = this.image;
+                const points = [];
+                for (let y = 0; y < height; y += params.density) {
+                    for (let x = 0; x < width; x += params.density) {
+                        const i = (y * width + x) * 4;
+                        if (data[i + 3] < 128) continue;
+                        const gray = (data[i] + data[i + 1] + data[i + 2]) / 3 + params.brightness;
+                        if (gray >= min && gray <= max) points.push({ x, y });
+                    }
+                }
+                const paths = [];
+                while (points.length > 1) {
+                    const path = [points.pop()];
+                    while (path.length < params.maxLength && points.length) {
+                        const last = path[path.length - 1];
+                        const closest = points.reduce((a, b) => {
+                            const distA = this.distance(last, a);
+                            const distB = this.distance(last, b);
+                            return distA < distB ? a : b;
+                        });
+                        const dist = this.distance(last, closest);
+                        if (dist < params.maxLength / 4) {
+                            path.push(closest);
+                            points.splice(points.indexOf(closest), 1);
+                        } else break;
+                    }
+                    paths.push(path);
+                }
+                return paths;
+            }
+
+            distance(p1, p2) {
+                return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+            }
+
+            draw() {
+                this.ctx.fillStyle = '#adadad';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                if (document.getElementById('darkVisible').checked) this.drawPaths(this.darkPaths, 'black', parseInt(document.getElementById('darkLineWidthRange').value));
+                if (document.getElementById('lightVisible').checked) this.drawPaths(this.lightPaths, 'white', parseInt(document.getElementById('lightLineWidthRange').value));
+            }
+
+            drawPaths(paths, color, lineWidth) {
+                this.ctx.strokeStyle = color;
+                this.ctx.lineWidth = lineWidth;
+                paths.forEach(path => {
+                    if (path.length < 2) return;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(path[0].x, path[0].y);
+                    path.forEach(pt => this.ctx.lineTo(pt.x, pt.y));
+                    this.ctx.stroke();
+                });
+            }
+
+            exportSVG(type) {
+                const paths = type === 'dark' ? this.darkPaths : this.lightPaths;
+                const lineWidth = parseInt(document.getElementById(`${type}LineWidthRange`).value);
+                if (!paths.length) {
+                    document.getElementById('status').textContent = 'Aucun chemin à exporter';
+                    return;
+                }
+                const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${this.canvas.width} ${this.canvas.height}">` +
+                    paths.map(path => `<path d="M${path.map(pt => `${pt.x} ${pt.y}`).join(' L')}" stroke="${type === 'dark' ? 'black' : 'white'}" stroke-width="${lineWidth}" fill="none"/>`).join('') +
+                    '</svg>';
+                const blob = new Blob([svg], { type: 'image/svg+xml' });
+                const link = document.createElement('a');
+                link.download = `${type}-paths.svg`;
+                link.href = URL.createObjectURL(blob);
+                link.click();
+            }
+        }
+
+        new StipplingApp();
+    </script>
+</body>
+</html>
